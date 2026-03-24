@@ -18,7 +18,6 @@ def main():
     model_state = AppState(REPO_DIR)
     view = MainWindow()
     
-    # Injection des dépendances dans le contrôleur
     controller = MainController(
         model=model_state, 
         view=view, 

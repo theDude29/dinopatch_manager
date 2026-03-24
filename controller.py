@@ -1,12 +1,13 @@
 import os
 from PIL import Image
-from PySide6.QtWidgets import QFileDialog, QMessageBox, QLabel
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QApplication
 from PySide6.QtGui import QColor, QPixmap, QImage, QPainter
 from PySide6.QtCore import Qt
 import matplotlib.cm as cm
 import torch
 import numpy as np
 from model import PatchLibrary
+from view import PatchCard
 
 class MainController:
     def __init__(self, model, view, model_size, max_size):
@@ -41,6 +42,47 @@ class MainController:
         self.view.view_local.label_image.mousePressEvent = self.handle_image_click
         self.view.view_memory.label_image.mousePressEvent = self.handle_memory_click
 
+        # Nouvelles connexions pour le mode édition
+        self.view.btn_delete_lib.clicked.connect(self.delete_current_library)
+        self.view.btn_merge.clicked.connect(self.merge_libraries_dialog)
+
+    def delete_current_library(self):
+        """Supprime le dossier complet de la librairie."""
+        if not self.model.active_library:
+            QMessageBox.warning(self.view, "Erreur", "Aucune librairie chargée.")
+            return
+
+        lib_path = self.model.active_library.lib_path
+        msg = f"Voulez-vous supprimer DÉFINITIVEMENT la librairie :\n{lib_path} ?"
+        if QMessageBox.critical(self.view, "Danger", msg, QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            import shutil
+            shutil.rmtree(lib_path) # Suppression du dossier
+            self.model.active_library = None
+            self.update_status_info()
+            self.update_memory_view()
+            self.populate_edit_grid()
+            QMessageBox.information(self.view, "Info", "Librairie supprimée.")
+
+    def merge_libraries_dialog(self):
+        """Dialogue pour choisir 2 sources et 1 destination."""
+        p_a = QFileDialog.getExistingDirectory(self.view, "Sélectionner Librairie A")
+        if not p_a: return
+        p_b = QFileDialog.getExistingDirectory(self.view, "Sélectionner Librairie B")
+        if not p_b: return
+        p_out = QFileDialog.getExistingDirectory(self.view, "Dossier de destination (VIDE)")
+        if not p_out: return
+
+        try:
+            self.view.status_bar.showMessage("Fusion en cours...", 0)
+            merged = PatchLibrary.merge(p_a, p_b, p_out)
+            self.model.active_library = merged
+            self.update_status_info()
+            QMessageBox.information(self.view, "Succès", "Fusion réussie !")
+        except Exception as e:
+            QMessageBox.critical(self.view, "Erreur", str(e))
+        finally:
+            self.view.status_bar.clearMessage()
+
     def open_image_folder(self):
         folder = QFileDialog.getExistingDirectory(self.view, "Sélectionner le dossier d'images")
         if folder:
@@ -50,6 +92,45 @@ class MainController:
             if self.model.image_list:
                 self.load_current_image()
                 self.view.show_explorer()
+
+    def create_heatmap_pixmap(self, vector, img_path, input_size):
+        """Génère un QPixmap d'une image avec la heatmap d'un vecteur spécifique."""
+        if not os.path.exists(img_path): return None
+        
+        # 1. Charger l'image et extraire les features
+        pil_img = Image.open(img_path).convert('RGB')
+        features, (tw, th) = self.model.dino.get_features(pil_img, input_size)
+        
+        # 2. Calculer la similarité (Heatmap)
+        with torch.no_grad():
+            flat_f = features.reshape(-1, self.model.dino.current_config['dim'])
+            # On compare toute l'image au vecteur du patch
+            sim = torch.matmul(flat_f, vector.to(self.model.dino.device))
+            heatmap = sim.reshape(features.shape[0], features.shape[1]).cpu().numpy()
+
+        # 3. Créer le Pixmap de base
+        base_pixmap = QPixmap(img_path).scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        
+        # 4. Générer la surcouche Heatmap (Jet)
+        heatmap_norm = np.clip(heatmap, 0, 1)
+        color_data = (cm.jet(heatmap_norm)[:, :, :3] * 255).astype(np.uint8)
+        # On utilise un seuil pour la transparence (ex: 0.5)
+        alphas = np.where(heatmap > 0.5, 160, 0).astype(np.uint8)
+        
+        rgba_data = np.zeros((heatmap.shape[0], heatmap.shape[1], 4), dtype=np.uint8)
+        rgba_data[:, :, :3] = color_data
+        rgba_data[:, :, 3] = alphas
+
+        q_img = QImage(rgba_data.data, heatmap.shape[1], heatmap.shape[0], 4 * heatmap.shape[1], QImage.Format_RGBA8888)
+        
+        # 5. Fusionner Heatmap et Image
+        result_pixmap = base_pixmap.copy()
+        painter = QPainter(result_pixmap)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, False) # Carrés nets
+        painter.drawImage(result_pixmap.rect(), q_img)
+        painter.end()
+        
+        return result_pixmap
 
     def set_scaled_pixmap(self, pixmap, target_label):
         """Redimensionne un pixmap pour qu'il s'ajuste au label sans le déformer."""
@@ -148,19 +229,16 @@ class MainController:
                     self.view.btn_delete_patch.setVisible(True)
 
     def show_source_in_inspector(self, metadata):
+        """Affiche la source avec la heatmap du patch sélectionné."""
         img_path = os.path.join(self.model.active_library.images_dir, metadata['image_name'])
-        if os.path.exists(img_path):
-            py, px = metadata['coords']
-            size = metadata.get('input_size', 512)
-            source_pix = QPixmap(img_path).scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            
-            painter = QPainter(source_pix)
-            painter.setPen(QColor(255, 0, 0))
-            painter.drawRect(px * 16, py * 16, 16, 16)
-            painter.end()
-            
-            self.view.label_source_preview.setPixmap(source_pix.scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            self.view.label_source_info.setText(f"📄 {metadata['image_name']}\n🧠 {metadata.get('dino_version')}\n📐 {size}px\n📍 [{py}, {px}]")
+        # On récupère le vecteur correspondant dans la lib
+        vector = self.model.active_library.vectors[self.current_inspected_idx]
+        
+        pixmap = self.create_heatmap_pixmap(vector, img_path, metadata.get('input_size', 512))
+        
+        if pixmap:
+            self.view.label_source_preview.setPixmap(pixmap.scaled(224, 224, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.view.label_source_info.setText(f"📄 {metadata['image_name']}\n📍 Patch : {metadata['coords']}")
 
     def delete_inspected_patch(self):
         if self.current_inspected_idx is not None and self.model.active_library:
@@ -216,8 +294,23 @@ class MainController:
         self.update_memory_view()
 
     def update_status_info(self):
-        count = len(self.model.active_library.metadata) if self.model.active_library else 0
+        """Synchronise les labels de la barre d'état avec l'état réel du modèle."""
+        count = 0
+        lib_display_name = "Aucune"
+        
+        if self.model.active_library:
+            # On récupère le nombre de patchs
+            if self.model.active_library.vectors is not None:
+                count = self.model.active_library.vectors.shape[0]
+            
+            # On extrait le nom du dossier à partir du chemin complet
+            # ex: "/home/user/ma_lib" devient "ma_lib"
+            lib_display_name = os.path.basename(self.model.active_library.lib_path)
+        
+        # Mise à jour des labels de la Vue
+        self.view.label_lib_name.setText(f"📂 Lib : {lib_display_name}")
         self.view.label_mem_count.setText(f"📦 Mémoire : {count} patchs")
+        self.view.label_thresh_val.setText(f"🎯 Seuil : {self.threshold:.2f}")
 
     def next_image(self):
         if not self.model.image_list: return
@@ -263,20 +356,52 @@ class MainController:
             self.update_memory_view()
 
     def toggle_edit_mode(self):
-        idx = 1 if self.view.central_stack.currentIndex() == 0 else 0
-        if idx == 1: self.populate_edit_grid()
-        self.view.central_stack.setCurrentIndex(idx)
+        """Bascule entre l'explorateur et la grille d'édition."""
+        if self.view.central_stack.currentIndex() == 0:
+            # On passe en mode édition
+            self.populate_edit_grid()
+            self.view.central_stack.setCurrentIndex(1)
+            self.view.action_edit_lib.setText("🔙 Retour à l'Explorateur")
+        else:
+            # On revient à l'explorateur
+            self.view.central_stack.setCurrentIndex(0)
+            self.view.action_edit_lib.setText("✏️ Modifier la Librairie")
+            self.update_memory_view()
 
     def populate_edit_grid(self):
-        for i in reversed(range(self.view.patch_grid.count())): self.view.patch_grid.itemAt(i).widget().setParent(None)
+        """Remplit la grille avec des cartes montrant la heatmap de chaque patch."""
+        # Nettoyage
+        while self.view.patch_grid.count():
+            child = self.view.patch_grid.takeAt(0)
+            if child.widget(): child.widget().deleteLater()
+
         if not self.model.active_library: return
+
+        # On affiche un message de chargement car cela peut être long
+        self.view.status_bar.showMessage("Génération des miniatures (IA)... Veuillez patienter", 0)
+        QApplication.processEvents() # Force la mise à jour de l'UI pour afficher le message
+
         for i, entry in enumerate(self.model.active_library.metadata):
             img_path = os.path.join(self.model.active_library.images_dir, entry['image_name'])
-            if os.path.exists(img_path):
-                lbl = QLabel()
-                pix = QPixmap(img_path).scaled(entry['input_size'], entry['input_size'], Qt.KeepAspectRatio)
-                lbl.setPixmap(pix.copy(entry['coords'][1]*16, entry['coords'][0]*16, 16, 16).scaled(64, 64, Qt.KeepAspectRatio))
-                self.view.patch_grid.addWidget(lbl, i // 8, i % 8)
+            vector = self.model.active_library.vectors[i]
+            
+            # Génération de l'image avec Heatmap
+            hm_pixmap = self.create_heatmap_pixmap(vector, img_path, entry.get('input_size', 512))
+            
+            if hm_pixmap:
+                card = PatchCard(hm_pixmap, f"Patch #{i}", i, self.delete_patch_from_grid)
+                self.view.patch_grid.addWidget(card, i // 4, i % 4)
+
+        self.view.status_bar.clearMessage()
+
+    def delete_patch_from_grid(self, index):
+        """Supprime un patch directement depuis la grille d'édition."""
+        confirm = QMessageBox.question(self.view, "Supprimer", f"Supprimer le patch #{index} ?")
+        if confirm == QMessageBox.Yes:
+            self.model.active_library.remove_patch(index)
+            self.populate_edit_grid() # On rafraîchit la grille
+            self.update_status_info()
+            self.update_memory_view()
 
     def save_library(self):
         if self.model.active_library: self.model.active_library.save()

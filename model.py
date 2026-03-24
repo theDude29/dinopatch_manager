@@ -25,6 +25,40 @@ class PatchLibrary:
         if os.path.exists(self.metadata_path):
             self.load()
 
+    @staticmethod
+    def merge(path_a, path_b, path_out):
+        """Fusionne deux bibliothèques dans une troisième."""
+        # 1. Charger les deux bibliothèques source
+        lib_a = PatchLibrary(path_a)
+        lib_b = PatchLibrary(path_b)
+        
+        # 2. Créer la bibliothèque de sortie
+        lib_out = PatchLibrary(path_out)
+        
+        # 3. Fusionner les métadonnées
+        # On combine simplement les listes
+        lib_out.metadata = lib_a.metadata + lib_b.metadata
+        
+        # 4. Fusionner les vecteurs
+        if lib_a.vectors is not None and lib_b.vectors is not None:
+            lib_out.vectors = torch.cat([lib_a.vectors, lib_b.vectors], dim=0)
+        elif lib_a.vectors is not None:
+            lib_out.vectors = lib_a.vectors.clone()
+        elif lib_b.vectors is not None:
+            lib_out.vectors = lib_b.vectors.clone()
+            
+        # 5. Copier toutes les images physiques
+        for lib_src in [lib_a, lib_b]:
+            for img_name in os.listdir(lib_src.images_dir):
+                src_file = os.path.join(lib_src.images_dir, img_name)
+                dst_file = os.path.join(lib_out.images_dir, img_name)
+                if not os.path.exists(dst_file):
+                    shutil.copy2(src_file, dst_file)
+        
+        # 6. Sauvegarder la nouvelle librairie
+        lib_out.save()
+        return lib_out
+
     def add_patch(self, vector, source_img_path, coords, dino_version, input_size):
         file_name = os.path.basename(source_img_path)
         dest_path = os.path.join(self.images_dir, file_name)

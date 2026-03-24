@@ -4,6 +4,38 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QSlider, QSplitter)
 from PySide6.QtCore import Qt
 
+# À ajouter dans view.py
+from PySide6.QtWidgets import QGroupBox
+
+class PatchCard(QGroupBox):
+    def __init__(self, heatmap_pixmap, info_text, index, delete_callback):
+        super().__init__()
+        self.setStyleSheet("background-color: #2a2a2a; border: 1px solid #444; color: white;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        
+        # En-tête avec index et bouton supprimer
+        header = QHBoxLayout()
+        lbl_info = QLabel(info_text)
+        lbl_info.setStyleSheet("font-size: 10px; font-weight: bold; border: none;")
+        btn_del = QPushButton("✕")
+        btn_del.setFixedSize(20, 20)
+        btn_del.setStyleSheet("background-color: #500; border: none; font-weight: bold;")
+        btn_del.clicked.connect(lambda: delete_callback(index))
+        
+        header.addWidget(lbl_info)
+        header.addStretch()
+        header.addWidget(btn_del)
+        
+        # Image unique avec Heatmap
+        self.lbl_img = QLabel()
+        self.lbl_img.setPixmap(heatmap_pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.lbl_img.setAlignment(Qt.AlignCenter)
+        self.lbl_img.setStyleSheet("border: 1px solid #111; background: #000;")
+
+        layout.addLayout(header)
+        layout.addWidget(self.lbl_img)
+
 # REMPLACEZ la classe PatchImageWidget entière :
 class PatchImageWidget(QFrame):
     def __init__(self, title):
@@ -34,27 +66,31 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DINO Patch Manager Pro")
+        self.setMinimumSize(1100, 750)
         self.resize(1400, 850)
 
         # 1. Barre de Navigation (Menu)
         self._create_menubar()
 
-        # 2. Widget Central Empilé
+        # 2. Widget Central Empilé (pour switcher entre Explorer et Editer)
         self.central_stack = QStackedWidget()
         self.setCentralWidget(self.central_stack)
 
-        # --- MODE EXPLORATEUR ---
+        # ==========================================
+        # --- MODE EXPLORATEUR (Index 0) ---
+        # ==========================================
         self.explorer_view = QWidget()
         self.explorer_layout = QVBoxLayout(self.explorer_view)
         self.explorer_layout.setContentsMargins(5, 5, 5, 5)
 
-        # UTILISATION DU SPLITTER POUR LES PROPORTIONS 40/40/20
+        # SPLITTER PRINCIPAL (Ratio 40/40/20)
         self.main_splitter = QSplitter(Qt.Horizontal)
         
-        self.view_local = PatchImageWidget("VUE LOCALE")
-        self.view_memory = PatchImageWidget("VUE MÉMOIRE")
+        # Vues Images
+        self.view_local = PatchImageWidget("VUE LOCALE (CLIC)")
+        self.view_memory = PatchImageWidget("VUE MÉMOIRE (GLOBAL)")
         
-        # Panneau Inspecteur
+        # Panneau Inspecteur (À droite)
         self.inspector_panel = QFrame()
         self.inspector_panel.setStyleSheet("background-color: #222; border-left: 1px solid #444;")
         inspect_layout = QVBoxLayout(self.inspector_panel)
@@ -73,7 +109,7 @@ class MainWindow(QMainWindow):
         self.label_source_info.setWordWrap(True)
 
         self.btn_delete_patch = QPushButton("🗑️ Supprimer ce Patch")
-        self.btn_delete_patch.setVisible(False)
+        self.btn_delete_patch.setVisible(False) # Caché par défaut
         self.btn_delete_patch.setStyleSheet("background-color: #500; color: white; padding: 8px; font-weight: bold;")
 
         inspect_layout.addWidget(self.label_inspect_title)
@@ -82,22 +118,17 @@ class MainWindow(QMainWindow):
         inspect_layout.addWidget(self.btn_delete_patch)
         inspect_layout.addStretch()
 
-        # AJOUT AU SPLITTER
-        self.main_splitter.addWidget(self.view_local)   # Index 0
-        self.main_splitter.addWidget(self.view_memory)  # Index 1
+        # Ajout au Splitter
+        self.main_splitter.addWidget(self.view_local)      # Index 0
+        self.main_splitter.addWidget(self.view_memory)     # Index 1
         self.main_splitter.addWidget(self.inspector_panel) # Index 2
         
-        # RÉGLAGE DES RATIOS (40% / 40% / 20%)
-        # On utilise setStretchFactor : 2 + 2 + 1 = 5 unités. 
-        # 2/5 = 40%, 1/5 = 20%.
+        # Configuration des proportions (40% / 40% / 20%)
         self.main_splitter.setStretchFactor(0, 2)
         self.main_splitter.setStretchFactor(1, 2)
         self.main_splitter.setStretchFactor(2, 1)
 
-        # Forcer les tailles initiales pour être sûr du rendu au premier lancement
-        self.main_splitter.setSizes([560, 560, 280]) 
-
-        # Barre de contrôle (bas)
+        # Barre de contrôle inférieure (Boutons + Slider)
         control_bar = QFrame()
         control_bar.setFixedHeight(60)
         control_bar.setStyleSheet("background: #282828; border-top: 1px solid #444;")
@@ -122,25 +153,66 @@ class MainWindow(QMainWindow):
         control_layout.addStretch()
         control_layout.addWidget(self.btn_next)
 
-        self.explorer_layout.addWidget(self.main_splitter, 1) # Le splitter prend tout l'espace
+        # Assemblage Explorer
+        self.explorer_layout.addWidget(self.main_splitter, 1)
         self.explorer_layout.addWidget(control_bar)
 
-        # --- MODE ÉDITION ---
+        # ==========================================
+        # --- MODE ÉDITION (Index 1) ---
+        # ==========================================
         self.edit_view = QWidget()
         self.edit_layout = QVBoxLayout(self.edit_view)
-        # ... (Garder la suite de ton code pour le mode édition)
+        
+        # Actions de bibliothèque
+        edit_actions_layout = QHBoxLayout()
+        self.btn_merge = QPushButton("🔗 Fusionner deux Librairies")
+        self.btn_delete_lib = QPushButton("🗑️ Supprimer la Librairie active")
+        
+        # Styles des boutons (On les applique APRÈS la création)
+        self.btn_merge.setStyleSheet("background-color: #155724; color: white; font-weight: bold; padding: 10px;")
+        self.btn_delete_lib.setStyleSheet("background-color: #721c24; color: white; font-weight: bold; padding: 10px;")
+        
+        edit_actions_layout.addWidget(self.btn_merge)
+        edit_actions_layout.addWidget(self.btn_delete_lib)
+        
+        # Grille de visualisation des patchs
+        self.scroll_area = QScrollArea()
+        self.scroll_content = QWidget()
+        self.patch_grid = QGridLayout(self.scroll_content)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setWidget(self.scroll_content)
+        
+        self.edit_layout.addLayout(edit_actions_layout)
+        self.edit_layout.addWidget(self.scroll_area)
 
-        # --- MODE ÉDITION (Similaire) ---
-        self.edit_view = QWidget()
-        # ... (Garder le code de l'edit_view inchangé)
-        self.central_stack.addWidget(self.explorer_view)
-        self.central_stack.addWidget(self.edit_view)
+        # Ajout des vues au Stack
+        self.central_stack.addWidget(self.explorer_view) # Index 0
+        self.central_stack.addWidget(self.edit_view)     # Index 1
 
-        # Status Bar
+        # ==========================================
+        # --- BARRE D'ÉTAT (Status Bar) ---
+        # ==========================================
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.label_mem_count = QLabel("📦 0 patchs")
-        self.label_thresh_val = QLabel("🎯 0.60")
+        
+        self.label_mem_count = QLabel("📦 Mémoire : 0 patchs")
+        self.label_thresh_val = QLabel("🎯 Seuil : 0.60")
+        
+        self.status_bar.addPermanentWidget(self.label_mem_count)
+        self.status_bar.addPermanentWidget(self.label_thresh_val)
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+
+        # Nouveau label pour le nom de la librairie
+        self.label_lib_name = QLabel("📂 Lib : Aucune")
+        self.label_lib_name.setStyleSheet("font-weight: bold; color: #3498db; margin-right: 20px;")
+
+        self.label_mem_count = QLabel("📦 Mémoire : 0 patchs")
+        self.label_thresh_val = QLabel("🎯 Seuil : 0.60")
+
+        # On ajoute le nom de la lib en premier (à gauche des infos permanentes)
+        self.status_bar.addPermanentWidget(self.label_lib_name)
         self.status_bar.addPermanentWidget(self.label_mem_count)
         self.status_bar.addPermanentWidget(self.label_thresh_val)
 

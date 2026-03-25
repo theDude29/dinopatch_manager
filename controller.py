@@ -14,7 +14,7 @@ class MainController:
         self.model_size, self.max_size = model_size, max_size
         self.threshold = 0.60
         
-        # Initialisation obligatoire des variables d'état (évite AttributeError)
+        # Initialisation obligatoire de l'état
         self.current_features = None
         self.last_click_vector = None
         self.last_click_coords = None
@@ -23,7 +23,7 @@ class MainController:
         
         self.model.dino.load_model(self.model_size)
         
-        # Signaux
+        # Connexions UI
         self.view.action_open_folder.triggered.connect(self.open_image_folder)
         self.view.action_new_lib.triggered.connect(self.create_new_library)
         self.view.action_open_lib.triggered.connect(self.open_library)
@@ -41,8 +41,7 @@ class MainController:
     def _refresh_ui(self):
         self.update_status_info()
         self.update_memory_view()
-        if self.view.central_stack.currentIndex() == 1:
-            self.populate_edit_grid()
+        if self.view.central_stack.currentIndex() == 1: self.populate_edit_grid()
 
     def toggle_edit_mode(self):
         is_explorer = self.view.central_stack.currentIndex() == 0
@@ -58,13 +57,11 @@ class MainController:
     # --- IA & RENDU ---
 
     def create_heatmap_pixmap(self, vector, img_path, input_size):
-        """Génère le rendu heatmap pour le cache disque."""
         if not os.path.exists(img_path): return None
         feat, (tw, th) = self.model.dino.get_features(Image.open(img_path).convert('RGB'), input_size)
         with torch.no_grad():
             sim = torch.matmul(feat.reshape(-1, self.model.dino.current_config['dim']), vector.to(self.model.dino.device))
             heatmap = sim.reshape(feat.shape[0], feat.shape[1]).cpu().numpy()
-        
         base = QPixmap(img_path).scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         rgba = np.zeros((heatmap.shape[0], heatmap.shape[1], 4), dtype=np.uint8)
         rgba[:,:,:3] = (cm.jet(np.clip(heatmap, 0, 1))[:,:,:3]*255).astype(np.uint8)
@@ -101,6 +98,7 @@ class MainController:
                 self.display_dynamic_heatmap(sim.reshape(hp, wp).cpu().numpy(), self.view.view_local)
 
     def handle_memory_click(self, event):
+        """Met à jour l'inspecteur double : Heatmap + Image brute."""
         label = self.view.view_memory.label_image
         pix = label.pixmap()
         if not pix or not hasattr(self, 'memory_scores'): return
@@ -111,28 +109,30 @@ class MainController:
             if self.memory_scores[py, px] >= self.threshold:
                 self.current_inspected_idx = int(self.memory_match_indices[py, px])
                 meta = self.model.active_library.metadata[self.current_inspected_idx]
+                
+                # 1. Image Heatmap (Cache)
                 hm_path = os.path.join(self.model.active_library.heatmaps_dir, meta.get('heatmap_cache', ''))
                 if os.path.exists(hm_path):
-                    self.view.label_source_preview.setPixmap(QPixmap(hm_path).scaled(256, 256, Qt.KeepAspectRatio))
-                self.view.label_source_info.setText(f"📄 {meta['image_name'][:10]}")
+                    self.view.label_source_preview.setPixmap(QPixmap(hm_path).scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                
+                # 2. Image Brute (Originale)
+                raw_path = os.path.join(self.model.active_library.images_dir, meta['image_name'])
+                if os.path.exists(raw_path):
+                    self.view.label_source_clean.setPixmap(QPixmap(raw_path).scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                
+                self.view.label_source_info.setText(f"📄 {meta['image_name']}\n📍 Coord: {meta['coords']}")
                 self.view.btn_delete_patch.setVisible(True)
 
-    # --- GESTION CACHE & GALERIE ---
-
     def next_image(self):
-        """Calcule le rendu et l'enregistre en cache avant de passer à la suite."""
         if self.last_click_vector is not None and self.model.active_library:
             img_p = os.path.join(self.model.image_folder, self.model.image_list[self.model.current_image_idx])
-            # On génère le rendu ICI pour le cache
             hm_cache = self.create_heatmap_pixmap(self.last_click_vector, img_p, self.max_size)
             self.model.active_library.add_patch(self.last_click_vector, img_p, self.last_click_coords, self.model_size, self.max_size, hm_cache)
-        
         if self.model.image_list:
             self.model.current_image_idx = (self.model.current_image_idx + 1) % len(self.model.image_list)
             self.last_click_vector = None; self.load_current_image(); self.update_status_info()
 
     def populate_edit_grid(self):
-        """Charge instantanément la galerie depuis le cache PNG."""
         while self.view.patch_grid.count():
             w = self.view.patch_grid.takeAt(0).widget()
             if w: w.deleteLater()

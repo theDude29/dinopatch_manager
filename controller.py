@@ -114,7 +114,7 @@ class MainController:
                 hm_path = os.path.join(self.model.active_library.heatmaps_dir, meta.get('heatmap_cache', ''))
                 if os.path.exists(hm_path):
                     self.view.label_source_preview.setPixmap(QPixmap(hm_path).scaled(256, 256, Qt.KeepAspectRatio))
-                self.view.label_source_info.setText(f"📄 {meta['image_name']}\n📍 Coord: {meta['coords']}")
+                self.view.label_source_info.setText(f"📄 {meta['image_name'][:10]}")
                 self.view.btn_delete_patch.setVisible(True)
 
     # --- GESTION CACHE & GALERIE ---
